@@ -1,0 +1,120 @@
+# Defines our Vagrant environment
+#
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+$pptmstr = <<PPTMSTR
+#Puppet Master:-
+echo "Installing and Configuring The Puppet Master"
+sudo rpm -Uvh https://yum.puppetlabs.com/puppetlabs-release-pc1-el-6.noarch.rpm
+sudo yum install -y puppetserver
+export PATH=$PATH:/opt/puppetlabs/puppet/bin
+sleep 10
+puppet --version
+PPTMSTR
+
+$pptdshbrd = <<PPTDSHBRD
+
+sudo yum -y install mysql-server
+sudo /etc/init.d/mysqld start
+sudo /usr/bin/mysqladmin -uroot password 'motorrobot' 
+
+
+sudo echo "create database puppetdash;" | mysql -uroot -pmotorrobot
+sudo echo "grant all privileges on puppetdash.* to puppetdash@localhost identified by 'motorrobot';" | mysql -uroot -pmotorrobot
+sudo echo "flush privileges;" | mysql -uroot -pmotorrobot
+
+sudo rpm -ivh http://yum.puppetlabs.com/el/6/products/x86_64/puppetlabs-release-6-1.noarch.rpm
+
+sudo yum -y install puppet-dashboard
+sudo cp /usr/share/puppet-dashboard/config/settings.yml.example /usr/share/puppet-dashboard/config/settings.yml
+sudo nano -w /usr/share/puppet-dashboard/config/database.yml
+
+sudo echo " report = true" >> /etc/puppetlabs/puppet/puppet.conf
+sudo echo "" >> /etc/puppetlabs/puppet/puppet.conf
+sudo echo "[master]" >> /etc/puppetlabs/puppet/puppet.conf
+sudo echo " reports = store, http" >> /etc/puppetlabs/puppet/puppet.conf
+sudo echo " reporturl = http://192.168.7.2:3000/reports/upload" >> /etc/puppetlabs/puppet/puppet.conf
+
+sudo puppetd -t
+sudo chown puppet-dashboard /usr/share/puppet-dashboard/log/
+sudo /sbin/chkconfig puppet-dashboard on
+sudo /sbin/chkconfig puppet-dashboard-workers on
+sudo /sbin/chkconfig mysqld on
+sudo /etc/init.d/puppet-dashboard restart
+sudo /etc/init.d/puppet-dashboard-workers restart
+
+PPTDSHBRD
+
+
+$pptclnt = <<PPTCLNT
+#Puppet Client:-
+echo "Installing and Configuring The Puppet Client"
+sudo rpm -Uvh https://yum.puppetlabs.com/puppetlabs-release-pc1-el-6.noarch.rpm
+sudo yum install -y puppet-agent
+export PATH=$PATH:/opt/puppetlabs/puppet/bin
+sleep 10
+puppet --version
+PPTCLNT
+
+$initial = <<INITIAL
+sudo yum remove -y ruby ruby-devel
+sudo yum groupinstall -y "Development Tools"
+sudo yum install -y openssl-devel
+sudo wget http://cache.ruby-lang.org/pub/ruby/2.1/ruby-2.1.2.tar.gz
+sudo tar -xvf ruby-2.1.2.tar.gz
+sudo ~/ruby-2.1.2/configure
+sudo wget https://rubygems.org/rubygems/rubygems-2.6.12.tgz
+sudo yum install -y rubygems
+sudo yum -y -q install ruby-devel git gcc-c++
+sudo gem install -V --no-ri --no-rdoc librarian-puppet -v 2.2.3
+sudo mkdir -p /etc/facter/facts.d
+sudo echo 'role=app' >> /etc/facter/facts.d/vagrant.txt
+sudo cd /vagrant/puppet
+sudo mv /usr/bin/ruby /usr/bin/ruby_old
+sudo cp /opt/puppetlabs/puppet/bin/ruby /opt/puppetlabs/puppet/bin/ruby_old
+sudo ln -sf /opt/puppetlabs/puppet/bin/ruby /usr/bin/ruby
+sudo ruby --version
+sudo /opt/puppetlabs/puppet/bin/librarian-puppet install --verbose
+INITIAL
+
+$run_puppet = <<RUNPUPPET
+  sudo /opt/puppetlabs/puppet/bin/puppet apply --modulepath=/vagrant/puppet/localmodules:/vagrant/puppet/modules \
+  --hiera_config=/vagrant/puppet/hiera.yaml /vagrant/puppet/manifests/site.pp
+RUNPUPPET
+
+Vagrant.configure("2") do |config|
+ 
+  # create puppetmaster node
+	config.vm.define "pptmstr" do |pptmstr_config|
+		pptmstr_config.vm.box = "puppetlabs/centos-6.6-32-nocm"
+#		pptmstr_config.vm.box = "jasonc/centos7-32bit"
+		pptmstr_config.vm.hostname = "pptmstr"
+		pptmstr_config.vm.network :private_network, ip: "10.0.15.11", virtualbox__intnet: "myvpn"
+		pptmstr_config.vm.provider "virtualbox" do |vb|
+			vb.memory = "3072"
+		end
+		pptmstr_config.vm.boot_timeout = 600
+		pptmstr_config.vm.provision :shell, path: "bootstrap.sh"
+		pptmstr_config.vm.provision :shell, inline: $pptmstr
+		pptmstr_config.vm.provision :shell, inline: $pptdshbrd
+	end
+
+  # create 2 puppetclient servers
+	(1..2).each do |i|
+		config.vm.define "pptclnt#{i}" do |node|
+			node.vm.box = "puppetlabs/centos-6.6-32-nocm"
+#			node.vm.box = "jasonc/centos7-32bit"
+			node.vm.hostname = "pptclnt#{i}"
+			node.vm.boot_timeout = 600
+			node.vm.network :private_network, ip: "10.0.15.2#{i}", virtualbox__intnet: "myvpn"
+			node.vm.provider "virtualbox" do |vb|
+				vb.memory = "512"
+			end
+			node.vm.provision :shell, path: "bootstrap.sh"
+			node.vm.provision :shell, inline: $pptclnt
+#			node.vm.provision :shell, inline: $initial
+#			node.vm.provision :shell, inline: $run_puppet
+		end
+	end
+end
